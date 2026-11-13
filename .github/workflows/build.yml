@@ -1,0 +1,60 @@
+name: build-from-zip
+
+# Загрузите noilit-project.zip в корень репозитория и запустите: Actions → build-from-zip → Run workflow.
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      zip:
+        description: Имя zip-файла в корне репозитория
+        default: noilit-project.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Распаковать zip
+        id: z
+        env:
+          ZIP_IN: ${{ github.event.inputs.zip }}
+        run: |
+          Z="$ZIP_IN"
+          [ -n "$Z" ] && [ -f "$Z" ] || Z=$(ls ./*.zip 2>/dev/null | head -1)
+          if [ -z "$Z" ] || [ ! -f "$Z" ]; then
+            echo "::error::В корне репозитория нет .zip — загрузите noilit-project.zip"; exit 1
+          fi
+          mkdir -p src && unzip -q -o "$Z" -d src
+          M=$(find src -path '*/core/noilit/Main.java' | head -1)
+          if [ -z "$M" ]; then echo "::error::В архиве нет core/noilit/Main.java"; exit 1; fi
+          echo "root=${M%/core/noilit/Main.java}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+
+      - name: Собрать noilit1.jar (ПК)
+        working-directory: ${{ steps.z.outputs.root }}
+        run: |
+          mkdir -p build/classes dist
+          javac --release 8 -encoding UTF-8 -d build/classes $(find core -name '*.java')
+          printf 'Main-Class: noilit.Main\nImplementation-Version: noilit1\n' > build/MANIFEST.MF
+          jar cfm dist/noilit1.jar build/MANIFEST.MF -C build/classes .
+          cp scripts/* dist/ && cp editor/index.html dist/editor.html
+          mkdir -p android/app/src/main/assets && cp dist/noilit1.jar android/app/src/main/assets/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noilit1-desktop
+          path: ${{ steps.z.outputs.root }}/dist
+
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.7' }
+
+      - name: Собрать APK (Android)
+        run: gradle -p "${{ steps.z.outputs.root }}/android" assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noilit1-android-apk
+          path: ${{ steps.z.outputs.root }}/android/app/build/outputs/apk/debug/*.apk
